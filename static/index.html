@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="남음">
+  <meta name="theme-color" content="#F3F0E8">
+  <title>남음</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icon-180.png">
+  <link rel="icon" href="/icon-180.png">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --ink: #1d1d1f;
+      --mute: rgba(60, 60, 67, 0.72);
+      --line: rgba(0, 0, 0, 0.12);
+      --track: rgba(0, 0, 0, 0.08);
+      --fill: rgba(60, 60, 67, 0.45);
+      --warn: #d70015;
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Helvetica Neue", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #f5f5f7;
+        --mute: rgba(235, 235, 245, 0.6);
+        --line: rgba(255, 255, 255, 0.12);
+        --track: rgba(255, 255, 255, 0.14);
+        --fill: rgba(235, 235, 245, 0.55);
+        --warn: #ff6961;
+      }
+      .logo.chatgpt { filter: invert(1); }
+    }
+    @media (prefers-color-scheme: light) {
+      .logo.grok { filter: invert(1); }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: transparent; color: var(--ink); }
+    body {
+      font-family: var(--font);
+      font-weight: 400;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+    }
+    button, input { font: inherit; color: inherit; }
+    button {
+      background: none;
+      border: 0;
+      padding: 4px 0 4px 12px;
+      color: var(--mute);
+      font-size: 12px;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    button:disabled { cursor: default; }
+    .wrap {
+      max-width: 368px;
+      margin: 0 auto;
+      padding: 14px 16px 16px;
+    }
+    header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+    }
+    h1 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 500;
+      letter-spacing: -0.03em;
+    }
+    .when {
+      margin: 2px 0 0;
+      color: var(--mute);
+      font-size: 11px;
+    }
+    .provider {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      column-gap: 10px;
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+    .logo {
+      width: 22px;
+      height: 22px;
+      margin-top: 1px;
+      object-fit: contain;
+    }
+    .head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .name {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+    .reset, .plan, .quiet {
+      color: var(--mute);
+      font-size: 12px;
+    }
+    .plan, .quiet { margin: 2px 0 0; }
+    .meters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      margin-top: 8px;
+    }
+    .chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .k {
+      color: var(--mute);
+      font-size: 12px;
+    }
+    .track {
+      width: 36px;
+      height: 4px;
+      background: var(--track);
+    }
+    .track > i {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: var(--fill);
+    }
+    .track.warn > i { background: var(--warn); }
+    .n {
+      font-size: 13px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.02em;
+    }
+    .n.warn { color: var(--warn); }
+    footer {
+      margin-top: 16px;
+      color: var(--mute);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    footer p { margin: 0 0 4px; }
+    footer a { color: inherit; }
+    .empty { margin-top: 48px; color: var(--mute); font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header>
+      <div>
+        <h1>Usage</h1>
+        <p class="when" id="when">Loading</p>
+      </div>
+      <button id="again" type="button">Refresh</button>
+    </header>
+    <section id="list"></section>
+    <footer id="foot" hidden></footer>
+  </main>
+  <script>
+    const list = document.getElementById("list");
+    const when = document.getElementById("when");
+    const again = document.getElementById("again");
+    const foot = document.getElementById("foot");
+    let data = null;
+    let loading = false;
+
+    function resetsIn(iso) {
+      if (!iso) return "";
+      const ms = new Date(iso).getTime() - Date.now();
+      if (Number.isNaN(ms)) return "";
+      if (ms <= 0) return "Resets now";
+      const minutes = Math.max(1, Math.round(ms / 60000));
+      if (minutes < 60) return "Resets in " + minutes + "m";
+      const hours = Math.floor(minutes / 60);
+      const rest = minutes % 60;
+      if (hours < 48) {
+        return rest && hours < 10 ? "Resets in " + hours + "h " + rest + "m" : "Resets in " + hours + "h";
+      }
+      const days = Math.floor(hours / 24);
+      const left = hours % 24;
+      return left ? "Resets in " + days + "d " + left + "h" : "Resets in " + days + "d";
+    }
+
+    function soonest(windows) {
+      let best = null;
+      for (const item of windows) {
+        if (!item.resetsAt) continue;
+        const time = new Date(item.resetsAt).getTime();
+        if (Number.isNaN(time)) continue;
+        if (best === null || time < best) best = time;
+      }
+      return best === null ? "" : new Date(best).toISOString();
+    }
+
+    function ago(iso) {
+      if (!iso) return "";
+      const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+      if (minutes < 1) return "Just now";
+      if (minutes < 60) return minutes + "m ago";
+      return Math.floor(minutes / 60) + "h ago";
+    }
+
+    function chip(providerName, item) {
+      const low = item.remaining <= 20;
+      const text = item.approx ? "<1%" : item.used + "%";
+      const node = document.createElement("div");
+      node.className = "chip";
+      const key = document.createElement("span");
+      key.className = "k";
+      key.textContent = item.label;
+      const track = document.createElement("span");
+      track.className = "track" + (low ? " warn" : "");
+      track.setAttribute("role", "meter");
+      track.setAttribute("aria-valuemin", "0");
+      track.setAttribute("aria-valuemax", "100");
+      track.setAttribute("aria-valuenow", String(item.used));
+      track.setAttribute("aria-label", providerName + " " + item.label + " " + text + " used");
+      const fill = document.createElement("i");
+      fill.style.width = (item.approx ? 2 : item.used) + "%";
+      track.appendChild(fill);
+      const number = document.createElement("span");
+      number.className = "n" + (low ? " warn" : "");
+      number.textContent = text;
+      node.append(key, track, number);
+      return node;
+    }
+
+    function draw() {
+      list.replaceChildren();
+      if (!data) {
+        when.textContent = "Loading";
+        return;
+      }
+      when.textContent = ago(data.fetchedAt);
+      const order = ["chatgpt", "claude", "grok", "gemini"];
+      const rank = (id) => {
+        const index = order.indexOf(id);
+        return index < 0 ? 99 : index;
+      };
+      const providers = data.providers.slice().sort((a, b) => rank(a.id) - rank(b.id));
+      for (const item of providers) {
+        const block = document.createElement("section");
+        block.className = "provider";
+        const logo = document.createElement("img");
+        logo.className = "logo " + item.id;
+        logo.alt = "";
+        logo.src = "/logos/" + item.id + ".png";
+        const body = document.createElement("div");
+        const head = document.createElement("div");
+        head.className = "head";
+        const name = document.createElement("h2");
+        name.className = "name";
+        name.textContent = item.name;
+        const reset = document.createElement("span");
+        reset.className = "reset";
+        reset.textContent = item.ok ? resetsIn(soonest(item.windows)) : "";
+        head.append(name, reset);
+        body.appendChild(head);
+        const bits = [item.plan, item.extra].filter(Boolean);
+        if (bits.length) {
+          const plan = document.createElement("p");
+          plan.className = "plan";
+          plan.textContent = bits.join(" · ");
+          body.appendChild(plan);
+        }
+        if (!item.ok) {
+          const quiet = document.createElement("p");
+          quiet.className = "quiet";
+          quiet.textContent = item.note || "Could not read usage";
+          body.appendChild(quiet);
+        } else {
+          const meters = document.createElement("div");
+          meters.className = "meters";
+          for (const row of item.windows) meters.appendChild(chip(item.name, row));
+          body.appendChild(meters);
+        }
+        block.append(logo, body);
+        list.appendChild(block);
+      }
+      const local = location.hostname === "127.0.0.1" || location.hostname === "localhost";
+      if (local && data.lanURL) {
+        foot.hidden = false;
+        foot.replaceChildren();
+        const line = document.createElement("p");
+        line.textContent = "On your phone, open this while the Mac app is running.";
+        const link = document.createElement("a");
+        link.href = data.lanURL;
+        link.textContent = data.lanURL.replace("http://", "");
+        foot.append(line, link);
+      } else {
+        foot.hidden = true;
+      }
+    }
+
+    async function load(fresh) {
+      if (loading) return;
+      loading = true;
+      again.disabled = true;
+      again.textContent = "…";
+      try {
+        const response = await fetch("/api/usage" + (fresh ? "?fresh=1" : ""), { cache: "no-store" });
+        data = await response.json();
+        draw();
+      } catch (error) {
+        when.textContent = "Not connected";
+      } finally {
+        loading = false;
+        again.disabled = false;
+        again.textContent = "Refresh";
+      }
+    }
+
+    again.addEventListener("click", () => load(true));
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) load(false);
+    });
+    setInterval(() => { if (data) draw(); }, 30000);
+    setInterval(() => { if (!document.hidden) load(false); }, 90000);
+    load(false);
+  </script>
+</body>
+</html>
