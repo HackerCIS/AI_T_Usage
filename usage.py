@@ -1,17 +1,24 @@
 """Read ChatGPT, Claude, Grok, and Gemini usage already signed in on this Mac.
 
 The numbers come from the same read-only endpoints each official CLI uses.
-Nothing here sends a prompt, spends quota, or writes a credential file.
+Nothing here sends a prompt or spends quota. Claude's access token is
+refreshed, and written back, only when it is about to expire.
 """
 
 from __future__ import annotations
 
+import getpass
 import json
+import os
+import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
+CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+CLAUDE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
 TIMEOUT = 20
 
 
@@ -250,15 +257,178 @@ def _login_note(error: Exception, expired: str) -> str:
     return note
 
 
-def _claude_oauth() -> dict:
-    path = Path.home() / ".claude" / ".credentials.json"
-    if not path.is_file():
-        raise RuntimeError("No Claude login on this Mac")
-    data = _read_json(path)
+CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials"
+
+
+def _claude_file() -> Path:
+    return Path.home() / ".claude" / ".credentials.json"
+
+
+def _normalize_claude(data: dict) -> tuple[dict, bool]:
+    if isinstance(data.get("claudeAiOauth"), dict):
+        return data, True
+    if data.get("accessToken"):
+        return {"claudeAiOauth": data}, False
+    return data, True
+
+
+def _claude_expiry(data: dict) -> float:
     oauth = data.get("claudeAiOauth") or {}
-    if not oauth.get("accessToken"):
+    expires_at = oauth.get("expiresAt")
+    if not oauth.get("accessToken") or not isinstance(expires_at, (int, float)):
+        return float("-inf")
+    return float(expires_at)
+
+
+def pick_claude_payload(payloads: list[dict]) -> dict | None:
+    best = None
+    best_expiry = float("-inf")
+    for data in payloads:
+        expiry = _claude_expiry(data)
+        if expiry > best_expiry:
+            best = data
+            best_expiry = expiry
+    return best
+
+
+def _keychain_claude(service: str, account: str) -> dict | None:
+    if sys.platform != "darwin":
+        return None
+    try:
+        raw = subprocess.check_output(
+            ["security", "find-generic-password", "-a", account, "-s", service, "-w"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return None
+    try:
+        parsed = json.loads(raw.strip())
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    data, _wrapped = _normalize_claude(parsed)
+    if not (data.get("claudeAiOauth") or {}).get("accessToken"):
+        return None
+    return data
+
+
+def _claude_oauth() -> tuple[dict, dict]:
+    account = getpass.getuser()
+    payloads = []
+    keychain = _keychain_claude(CLAUDE_KEYCHAIN_SERVICE, account)
+    if keychain:
+        payloads.append(keychain)
+    path = _claude_file()
+    if path.is_file():
+        try:
+            file_data, _wrapped = _normalize_claude(_read_json(path))
+            if (file_data.get("claudeAiOauth") or {}).get("accessToken"):
+                payloads.append(file_data)
+        except (OSError, json.JSONDecodeError):
+            pass
+    chosen = pick_claude_payload(payloads)
+    if chosen is None:
         raise RuntimeError("No Claude login on this Mac")
-    return oauth
+    source = {
+        "account": account,
+        "service": CLAUDE_KEYCHAIN_SERVICE,
+        "from_keychain": chosen is keychain,
+    }
+    return chosen, source
+
+
+def claude_refresh_body(refresh_token: str, scopes) -> dict:
+    body = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": CLAUDE_CLIENT_ID,
+    }
+    if isinstance(scopes, list):
+        names = [item for item in scopes if isinstance(item, str) and item]
+        if names:
+            body["scope"] = " ".join(names)
+    return body
+
+
+def _write_private_json(path: Path, data: dict) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(data))
+    try:
+        os.chmod(temporary, 0o600)
+    except OSError:
+        pass
+    os.replace(temporary, path)
+
+
+def _save_claude(data: dict, source: dict) -> None:
+    path = _claude_file()
+    if path.is_file() or source.get("from_keychain"):
+        try:
+            _write_private_json(path, data)
+        except OSError:
+            if not source.get("from_keychain"):
+                raise
+    if not source.get("from_keychain") or sys.platform != "darwin":
+        return
+    stored = data.get("claudeAiOauth") or data
+    try:
+        subprocess.run(
+            [
+                "security",
+                "add-generic-password",
+                "-U",
+                "-a",
+                source["account"],
+                "-s",
+                source["service"],
+                "-w",
+                json.dumps(stored),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+        return
+
+
+def _refresh_claude(data: dict, source: dict) -> dict:
+    oauth = data.get("claudeAiOauth") or {}
+    refresh = oauth.get("refreshToken")
+    if not isinstance(refresh, str) or not refresh:
+        raise RuntimeError("Login expired")
+    try:
+        _, payload = _request(
+            CLAUDE_TOKEN_URL,
+            {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "claude-cli/2.1.303 (external, cli)"},
+            method="POST",
+            body=json.dumps(claude_refresh_body(refresh, oauth.get("scopes"))).encode(),
+        )
+    except RuntimeError as error:
+        text = str(error)
+        if "HTTP 400" in text or "HTTP 401" in text or "HTTP 403" in text:
+            raise RuntimeError("Login expired") from None
+        raise
+    if not isinstance(payload, dict) or not payload.get("access_token"):
+        raise RuntimeError("Login expired")
+    fresh = json.loads(json.dumps(data))
+    fresh_oauth = fresh.setdefault("claudeAiOauth", {})
+    fresh_oauth["accessToken"] = payload["access_token"]
+    if isinstance(payload.get("refresh_token"), str) and payload["refresh_token"]:
+        fresh_oauth["refreshToken"] = payload["refresh_token"]
+    expires_in = payload.get("expires_in") or 3600
+    fresh_oauth["expiresAt"] = int(time.time() * 1000 + float(expires_in) * 1000)
+    refresh_expires = payload.get("refresh_token_expires_in")
+    if isinstance(refresh_expires, (int, float)):
+        fresh_oauth["refreshTokenExpiresAt"] = int(time.time() * 1000 + float(refresh_expires) * 1000)
+    if isinstance(payload.get("scope"), str) and payload["scope"].strip():
+        fresh_oauth["scopes"] = payload["scope"].split()
+    _save_claude(fresh, source)
+    return fresh
 
 
 def _expires_in(expires_at) -> float | None:
@@ -270,10 +440,12 @@ def _expires_in(expires_at) -> float | None:
 
 def fetch_claude() -> dict:
     try:
-        oauth = _claude_oauth()
+        data, source = _claude_oauth()
+        oauth = data["claudeAiOauth"]
         remaining = _expires_in(oauth.get("expiresAt"))
-        if remaining is not None and remaining < 120:
-            return failed("claude", "Claude", "Open Claude once")
+        if remaining is None or remaining < 120:
+            data = _refresh_claude(data, source)
+            oauth = data["claudeAiOauth"]
         _, payload = _request(
             "https://api.anthropic.com/api/oauth/usage",
             {

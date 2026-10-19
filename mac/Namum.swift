@@ -15,12 +15,21 @@ struct UsageSnap: Decodable {
     let providers: [Provider]
 }
 
+private let statusAutosaveName = "Namum"
+
+// 0 is the slot next to Control Center. Larger numbers sit further left and
+// disappear first when the menu bar runs out of room.
+private func pinStatusItemToFront() {
+    let defaults = UserDefaults.standard
+    defaults.set(0, forKey: "NSStatusItem Preferred Position \(statusAutosaveName)")
+    defaults.set(true, forKey: "NSStatusItem Visible \(statusAutosaveName)")
+}
+
 private func raiseStatusItem(_ item: NSStatusItem) {
     let sel = NSSelectorFromString("_setPriority:")
-    guard item.responds(to: sel) else { return }
-    let imp = item.method(for: sel)
+    guard item.responds(to: sel), let imp = item.method(for: sel) else { return }
     typealias SetPriority = @convention(c) (AnyObject, Selector, Int) -> Void
-    unsafeBitCast(imp, to: SetPriority.self)(item, sel, 1_000_000)
+    unsafeBitCast(imp, to: SetPriority.self)(item, sel, Int.max)
 }
 
 private let providerOrder = ["chatgpt", "claude", "grok", "gemini"]
@@ -160,7 +169,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
     }
 
     func makeStatusItem() {
+        pinStatusItemToFront()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.autosaveName = statusAutosaveName
         raiseStatusItem(statusItem)
         guard let button = statusItem.button else { return }
         button.imagePosition = .imageOnly

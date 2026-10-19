@@ -5,6 +5,8 @@ from server import listen_host, logo_path
 from usage import (
     _login_note,
     claude_plan,
+    claude_refresh_body,
+    pick_claude_payload,
     gemini_plan,
     parse_claude,
     parse_codex,
@@ -179,6 +181,22 @@ class ParseTests(unittest.TestCase):
         self.assertNotIn("secret-project-id", f"{plan} {extra}")
         fallback, _ = gemini_plan({"currentTier": {"id": "free-tier"}})
         self.assertEqual(fallback, "Free")
+
+    def test_claude_prefers_the_login_that_expires_later(self):
+        stale = {"claudeAiOauth": {"accessToken": "old", "expiresAt": 100}}
+        current = {"claudeAiOauth": {"accessToken": "new", "expiresAt": 500}}
+        missing = {"claudeAiOauth": {"expiresAt": 900}}
+        chosen = pick_claude_payload([stale, missing, current])
+        self.assertEqual(chosen["claudeAiOauth"]["accessToken"], "new")
+
+    def test_claude_refresh_keeps_the_saved_scopes(self):
+        body = claude_refresh_body("refresh-token", ["user:inference", "user:profile"])
+        self.assertEqual(body["grant_type"], "refresh_token")
+        self.assertEqual(body["refresh_token"], "refresh-token")
+        self.assertEqual(body["scope"], "user:inference user:profile")
+        self.assertNotIn("client_secret", body)
+        bare = claude_refresh_body("refresh-token", None)
+        self.assertNotIn("scope", bare)
 
     def test_expired_login_notes_do_not_repeat_the_old_korean_string(self):
         self.assertEqual(_login_note(RuntimeError("HTTP 401"), "Open Codex once"), "Open Codex once")
