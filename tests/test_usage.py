@@ -209,16 +209,16 @@ class ParseTests(unittest.TestCase):
         self.assertNotIn("ya29", _login_note(RuntimeError("HTTP 401 ya29.secret"), "Run gemini once"))
 
     def test_server_stays_on_localhost_unless_asked(self):
-        old = os.environ.pop("NAMUM_LAN", None)
+        old = os.environ.pop("HEADROOM_LAN", None)
         try:
             self.assertEqual(listen_host([]), "127.0.0.1")
             self.assertEqual(listen_host(["--lan"]), "0.0.0.0")
-            os.environ["NAMUM_LAN"] = "1"
+            os.environ["HEADROOM_LAN"] = "1"
             self.assertEqual(listen_host([]), "0.0.0.0")
         finally:
-            os.environ.pop("NAMUM_LAN", None)
+            os.environ.pop("HEADROOM_LAN", None)
             if old is not None:
-                os.environ["NAMUM_LAN"] = old
+                os.environ["HEADROOM_LAN"] = old
 
     def test_logo_route_is_an_allowlist(self):
         self.assertIsNone(logo_path("/logos/../server.py"))

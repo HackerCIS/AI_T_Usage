@@ -15,7 +15,7 @@ struct UsageSnap: Decodable {
     let providers: [Provider]
 }
 
-private let statusAutosaveName = "Namum"
+private let statusAutosaveName = "Headroom"
 
 // 0 is the slot next to Control Center. Larger numbers sit further left and
 // disappear first when the menu bar runs out of room.
@@ -145,7 +145,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
                     self.refreshStatus()
                 } else if self.bootTries > 40 || died {
                     timer.invalidate()
-                    self.alert("남음을 시작하지 못했습니다. /tmp/namum-server.log 를 확인해 주세요.")
+                    self.alert("Headroom을 시작하지 못했습니다. /tmp/headroom-server.log 를 확인해 주세요.")
                 }
             }
         }
@@ -176,7 +176,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
         guard let button = statusItem.button else { return }
         button.imagePosition = .imageOnly
         button.image = statusImage([("chatgpt", "…"), ("claude", "…"), ("grok", "…"), ("gemini", "…")])
-        button.toolTip = "남음"
+        button.toolTip = "Headroom"
         button.target = self
         button.action = #selector(statusClicked)
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -385,7 +385,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
         var ok = false
         URLSession.shared.dataTask(with: request) { data, response, _ in
             if let http = response as? HTTPURLResponse, http.statusCode == 200,
-               let data, let text = String(data: data, encoding: .utf8), text.contains("namum") {
+               let data, let text = String(data: data, encoding: .utf8), text.contains("headroom") {
                 ok = true
             }
             sem.signal()
@@ -400,14 +400,14 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
             alert("server.py 가 앱 옆에 없습니다.")
             return
         }
-        let logURL = URL(fileURLWithPath: "/tmp/namum-server.log")
+        let logURL = URL(fileURLWithPath: "/tmp/headroom-server.log")
         FileManager.default.createFile(atPath: logURL.path, contents: nil)
         let handle = try? FileHandle(forWritingTo: logURL)
         handle?.seekToEndOfFile()
         let marker = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/Namum/lan")
+            .appendingPathComponent("Library/Application Support/Headroom/lan")
         var arguments = [script.path]
-        if ProcessInfo.processInfo.environment["NAMUM_LAN"] == "1"
+        if ProcessInfo.processInfo.environment["HEADROOM_LAN"] == "1"
             || FileManager.default.fileExists(atPath: marker.path) {
             arguments.append("--lan")
         }
@@ -431,7 +431,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
 
     func alert(_ text: String) {
         let alert = NSAlert()
-        alert.messageText = "남음"
+        alert.messageText = "Headroom"
         alert.informativeText = text
         alert.runModal()
     }

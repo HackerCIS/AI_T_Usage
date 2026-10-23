@@ -1,4 +1,4 @@
-"""Serve the 남음 page on this Mac.
+"""Serve the Headroom page on this Mac.
 
 The server listens on 127.0.0.1 unless phone access is turned on.
 Phone access has no password. Do not publish that address on the internet.
@@ -44,7 +44,7 @@ def lan_enabled(argv: list[str] | None = None) -> bool:
     args = sys.argv[1:] if argv is None else argv
     if "--lan" in args:
         return True
-    return os.environ.get("NAMUM_LAN", "").strip().lower() in {"1", "true", "yes"}
+    return os.environ.get("HEADROOM_LAN", "").strip().lower() in {"1", "true", "yes"}
 
 
 def listen_host(argv: list[str] | None = None) -> str:
@@ -109,7 +109,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if path == "/api/health":
-            body = b'{"name":"namum"}'
+            body = b'{"name":"headroom"}'
             self._send(200, body, "application/json", "no-store")
             return
         if path == "/api/usage":
@@ -141,7 +141,7 @@ def main() -> None:
     _lan = lan_enabled()
     host = listen_host()
     server = ThreadingHTTPServer((host, PORT), Handler)
-    print(f"남음  http://127.0.0.1:{PORT}")
+    print(f"Headroom  http://127.0.0.1:{PORT}")
     if _lan:
         ip = lan_ip()
         if ip:
