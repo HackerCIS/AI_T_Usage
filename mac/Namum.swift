@@ -4,6 +4,7 @@ import WebKit
 struct UsageSnap: Decodable {
     struct Provider: Decodable {
         struct Window: Decodable {
+            let label: String
             let used: Int
             let approx: Bool?
         }
@@ -352,9 +353,9 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
         let sorted = snap.providers.sorted { providerRank($0.id) < providerRank($1.id) }
         var parts: [(text: String, emphasis: Bool)] = []
         for provider in sorted {
-            if provider.ok, let fullest = provider.windows.max(by: { $0.used < $1.used }) {
-                let text = fullest.approx == true && fullest.used == 0 ? "<1" : String(fullest.used)
-                remembered[provider.id] = (text, fullest.used >= 80)
+            if provider.ok, let shown = statusWindow(for: provider) {
+                let text = shown.approx == true && shown.used == 0 ? "<1" : String(shown.used)
+                remembered[provider.id] = (text, shown.used >= 80)
             } else if !provider.ok {
                 remembered[provider.id] = ("–", false)
             }
@@ -371,6 +372,13 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
         }
         statusItem.button?.toolTip = named.joined(separator: "  ·  ")
         raiseStatusItem(statusItem)
+    }
+
+    func statusWindow(for provider: UsageSnap.Provider) -> UsageSnap.Provider.Window? {
+        if provider.id == "claude", let weekly = provider.windows.first(where: { $0.label == "wk" }) {
+            return weekly
+        }
+        return provider.windows.max(by: { $0.used < $1.used })
     }
 
     func repo() -> URL {
