@@ -1,4 +1,4 @@
-# 남음
+# Headroom
 
 이 맥에 로그인된 ChatGPT, Claude, Grok, Gemini의 구독 사용량을 메뉴 막대와 작은 창에 모읍니다.
 
@@ -16,9 +16,9 @@
 
 ## 준비
 
-각 회사 CLI로 이 맥에 한 번 로그인합니다. 남음은 그 로그인을 읽습니다. Claude는 키체인에 있는 최신 로그인을 먼저 보고, 액세스 토큰이 만료되면 Claude CLI와 같은 방식으로만 갱신합니다. Grok과 Gemini 토큰은 갱신하지 않습니다.
+각 회사 CLI로 이 맥에 한 번 로그인합니다. Headroom은 그 로그인을 읽습니다. Claude는 키체인에 있는 최신 로그인을 먼저 보고, 액세스 토큰이 만료되면 Claude CLI와 같은 방식으로만 갱신합니다. Grok과 Gemini 토큰은 갱신하지 않습니다.
 
-| 회사 | 로그인 | 남음이 읽는 파일 |
+| 회사 | 로그인 | Headroom이 읽는 파일 |
 | --- | --- | --- |
 | ChatGPT | Codex (`codex`) | `~/.codex/auth.json` |
 | Claude | Claude Code (`claude`) | 키체인의 `Claude Code-credentials`, 없으면 `~/.claude/.credentials.json` |
@@ -32,7 +32,7 @@ Gemini API 키(`GEMINI_API_KEY`)만으로는 구독 한도를 조회할 수 없�
 ```bash
 python3 scripts/make_icon.py
 ./scripts/build_mac_app.sh
-open Namum.app
+open Headroom.app
 ```
 
 메뉴 막대, 다른 상태 아이콘들 사이에 붙습니다. 종료는 오른쪽 클릭의 종료입니다. 앱이 직접 띄운 서버는 종료할 때 같이 끝납니다.
@@ -47,11 +47,11 @@ python3 server.py
 
 ## 로그인이 없거나 만료되면
 
-Grok과 Gemini 토큰은 남음이 갱신하지 않습니다. 그 둘은 각 CLI를 한 번 실행하면 그 CLI가 로그인을 다시 씁니다.
+Grok과 Gemini 토큰은 Headroom이 갱신하지 않습니다. 그 둘은 각 CLI를 한 번 실행하면 그 CLI가 로그인을 다시 씁니다.
 
 - ChatGPT: Codex를 한 번 실행합니다. 창에는 `Open Codex once`.
-- Claude: 만료되면 남음이 갱신합니다. 갱신이 거절되면 `claude`를 한 번 실행합니다. 창에는 `Open Claude once`.
-- Grok: 터미널에서 `grok`를 한 번 실행합니다. Grok 토큰을 남음이 갱신하면 CLI 로그인이 풀릴 수 있어, 남음은 그 파일을 쓰지 않습니다.
+- Claude: 만료되면 Headroom이 갱신합니다. 갱신이 거절되면 `claude`를 한 번 실행합니다. 창에는 `Open Claude once`.
+- Grok: 터미널에서 `grok`를 한 번 실행합니다. Grok 토큰을 Headroom이 갱신하면 CLI 로그인이 풀릴 수 있어, Headroom은 그 파일을 쓰지 않습니다.
 - Gemini: `gemini`를 한 번 실행합니다. 창에는 `Run gemini once`.
 
 로그인 파일 자체가 없으면 `No ChatGPT login on this Mac`처럼 표시됩니다.
@@ -65,9 +65,9 @@ Grok과 Gemini 토큰은 남음이 갱신하지 않습니다. 그 둘은 각 CLI
 맥 앱으로 쓰려면 앱을 종료한 뒤:
 
 ```bash
-mkdir -p "$HOME/Library/Application Support/Namum"
-touch "$HOME/Library/Application Support/Namum/lan"
-open Namum.app
+mkdir -p "$HOME/Library/Application Support/Headroom"
+touch "$HOME/Library/Application Support/Headroom/lan"
+open Headroom.app
 ```
 
 끄려면 그 `lan` 파일을 지우고 앱을 다시 엽니다.
@@ -78,11 +78,11 @@ open Namum.app
 python3 server.py --lan
 ```
 
-`NAMUM_LAN=1`도 같습니다. 창 아래에 `호스트:8737`이 나오면, 폰이 같은 와이파이에 있는 동안 Safari로 열고 공유 → 홈 화면에 추가합니다. 맥 앱이 꺼지면 폰에서도 열리지 않습니다.
+`HEADROOM_LAN=1`도 같습니다. 창 아래에 `호스트:8737`이 나오면, 폰이 같은 와이파이에 있는 동안 Safari로 열고 공유 → 홈 화면에 추가합니다. 맥 앱이 꺼지면 폰에서도 열리지 않습니다.
 
 ## 보안
 
-- 서버는 기본적으로 `127.0.0.1:8737`만 듣습니다. 폰 접근은 `--lan`, `NAMUM_LAN=1`, 또는 위의 `lan` 파일로만 켭니다.
+- 서버는 기본적으로 `127.0.0.1:8737`만 듣습니다. 폰 접근은 `--lan`, `HEADROOM_LAN=1`, 또는 위의 `lan` 파일로만 켭니다.
 - Grok, Gemini 자격 증명에는 쓰지 않습니다. Claude 액세스 토큰이 만료됐을 때만 갱신하고, 키체인 항목과 `~/.claude/.credentials.json`에 다시 씁니다.
 - Google OAuth 클라이언트 비밀은 저장소에 없습니다. Gemini 토큰도 갱신하지 않습니다.
 - API 응답과 화면에는 토큰, 이메일, 계정 ID, Google Cloud 프로젝트 ID를 넣지 않습니다.
