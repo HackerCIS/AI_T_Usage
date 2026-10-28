@@ -201,6 +201,14 @@
       return best === null ? "" : new Date(best).toISOString();
     }
 
+    function headlineReset(provider) {
+      if (provider.id === "claude") {
+        const weekly = provider.windows.find((row) => row.label === "wk" && row.resetsAt);
+        if (weekly) return weekly.resetsAt;
+      }
+      return soonest(provider.windows);
+    }
+
     function ago(iso) {
       if (!iso) return "";
       const minutes = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
@@ -262,7 +270,7 @@
         name.textContent = item.name;
         const reset = document.createElement("span");
         reset.className = "reset";
-        reset.textContent = item.ok ? resetsIn(soonest(item.windows)) : "";
+        reset.textContent = item.ok ? resetsIn(headlineReset(item)) : "";
         head.append(name, reset);
         body.appendChild(head);
         const bits = [item.plan, item.extra].filter(Boolean);
