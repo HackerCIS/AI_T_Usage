@@ -11,6 +11,7 @@ struct UsageSnap: Decodable {
         let id: String
         let name: String
         let ok: Bool
+        let note: String?
         let windows: [Window]
     }
     let providers: [Provider]
@@ -118,6 +119,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
     var statusItem: NSStatusItem!
     var refreshTimer: Timer?
     var bootTimer: Timer?
+    var activity: NSObjectProtocol?
     var bootTries = 0
     var remembered: [String: (text: String, emphasis: Bool)] = [:]
     var monitorsInstalled = false
@@ -126,6 +128,13 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
     var pageURL: URL { URL(string: "http://127.0.0.1:\(port)/")! }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A menu-bar-only app gets App Nap, and then the 90s refresh never
+        // runs. The bar would keep the first paint, including a Claude "–"
+        // from a keychain that was still locked at login.
+        activity = ProcessInfo.processInfo.beginActivity(
+            options: .userInitiatedAllowingIdleSystemSleep,
+            reason: "Refresh the usage meter"
+        )
         makeStatusItem()
         makeWindow()
         if let icon = NSImage(contentsOf: repo().appendingPathComponent("static/icon-512.png")) {
@@ -150,9 +159,21 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
                 }
             }
         }
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 90, repeats: true) { [weak self] _ in
             self?.refreshStatus()
         }
+        RunLoop.main.add(timer, forMode: .common)
+        refreshTimer = timer
+        // Login can unlock the keychain a few seconds after this app starts.
+        for delay in [3.0, 15.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.refreshStatus()
+            }
+        }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        refreshStatus()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -223,6 +244,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
     }
 
     @objc func showWindow() {
+        refreshStatus()
         (window as? MenuPanel)?.allowShow = true
         placePanel()
         window.orderFrontRegardless()
@@ -343,7 +365,8 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
 
     func refreshStatus() {
         guard let url = URL(string: "http://127.0.0.1:\(port)/api/usage") else { return }
-        URLSession.shared.dataTask(with: url) { data, _, _ in
+        let request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20)
+        URLSession.shared.dataTask(with: request) { data, _, _ in
             guard let data, let snap = try? JSONDecoder().decode(UsageSnap.self, from: data) else { return }
             DispatchQueue.main.async { self.apply(snap) }
         }.resume()
@@ -356,6 +379,10 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelega
             if provider.ok, let shown = statusWindow(for: provider) {
                 let text = shown.approx == true && shown.used == 0 ? "<1" : String(shown.used)
                 remembered[provider.id] = (text, shown.used >= 80)
+            } else if provider.note == "Try again in a moment" {
+                if remembered[provider.id] == nil {
+                    remembered[provider.id] = ("–", false)
+                }
             } else if !provider.ok {
                 remembered[provider.id] = ("–", false)
             }

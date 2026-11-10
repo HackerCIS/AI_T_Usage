@@ -1,20 +1,26 @@
 """Read ChatGPT, Claude, Grok, and Gemini usage already signed in on this Mac.
 
 The numbers come from the same read-only endpoints each official CLI uses.
-Nothing here sends a prompt or spends quota. Claude's access token is
-refreshed, and written back, only when it is about to expire.
+Nothing here sends a prompt or spends quota. Claude and Grok access tokens
+are refreshed, and written back, only when they are about to expire. Grok's
+refresh takes the same auth-file lock the Grok CLI uses, so a reboot does
+not leave a short-lived login blank.
 """
 
 from __future__ import annotations
 
+import fcntl
 import getpass
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 CLAUDE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
@@ -235,14 +241,25 @@ def _request(url: str, headers: dict, method: str = "GET", body: bytes | None = 
         with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
             return response.status, json.loads(response.read(1_000_000))
     except urllib.error.HTTPError as error:
+        code = error.code
+        detail = ""
+        try:
+            payload = json.loads(error.read(8000))
+            err = payload.get("error") if isinstance(payload, dict) else None
+            if isinstance(err, str) and re.fullmatch(r"[A-Za-z0-9_]+", err):
+                detail = " " + err
+        except (OSError, json.JSONDecodeError, UnicodeError, AttributeError):
+            pass
         error.close()
-        raise RuntimeError(f"HTTP {error.code}") from None
+        raise RuntimeError(f"HTTP {code}{detail}") from None
 
 
 def _note_for_error(error: Exception) -> str:
     text = str(error)
     if text.startswith("No ") or text.startswith("Could not") or text.startswith("Open ") or text.startswith("Run "):
         return text
+    if text.startswith("Login expired"):
+        return "Login expired"
     if "HTTP 429" in text:
         return "Try again in a moment"
     if "HTTP 401" in text or "HTTP 403" in text:
@@ -291,6 +308,39 @@ def pick_claude_payload(payloads: list[dict]) -> dict | None:
     return best
 
 
+def _parse_claude_keychain_services(dump: str) -> list[str]:
+    found = []
+    seen = set()
+    prefix = CLAUDE_KEYCHAIN_SERVICE
+    for match in re.finditer(r'"svce"<blob>="([^"]*)"', dump):
+        name = match.group(1)
+        if name != prefix and not name.startswith(prefix + "-"):
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        found.append(name)
+    return found
+
+
+def _claude_keychain_services() -> list[str]:
+    names: list[str] = []
+    if sys.platform == "darwin":
+        try:
+            raw = subprocess.check_output(
+                ["security", "dump-keychain"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+            raw = ""
+        names = _parse_claude_keychain_services(raw)
+    if CLAUDE_KEYCHAIN_SERVICE not in names:
+        names.insert(0, CLAUDE_KEYCHAIN_SERVICE)
+    return names
+
+
 def _keychain_claude(service: str, account: str) -> dict | None:
     if sys.platform != "darwin":
         return None
@@ -318,25 +368,34 @@ def _keychain_claude(service: str, account: str) -> dict | None:
 def _claude_oauth() -> tuple[dict, dict]:
     account = getpass.getuser()
     payloads = []
-    keychain = _keychain_claude(CLAUDE_KEYCHAIN_SERVICE, account)
-    if keychain:
-        payloads.append(keychain)
+    sources = []
+    for service in _claude_keychain_services():
+        data = _keychain_claude(service, account)
+        if data is None:
+            continue
+        payloads.append(data)
+        sources.append({
+            "account": account,
+            "service": service,
+            "from_keychain": True,
+        })
     path = _claude_file()
     if path.is_file():
         try:
             file_data, _wrapped = _normalize_claude(_read_json(path))
             if (file_data.get("claudeAiOauth") or {}).get("accessToken"):
                 payloads.append(file_data)
+                sources.append({
+                    "account": account,
+                    "service": CLAUDE_KEYCHAIN_SERVICE,
+                    "from_keychain": False,
+                })
         except (OSError, json.JSONDecodeError):
             pass
     chosen = pick_claude_payload(payloads)
     if chosen is None:
         raise RuntimeError("No Claude login on this Mac")
-    source = {
-        "account": account,
-        "service": CLAUDE_KEYCHAIN_SERVICE,
-        "from_keychain": chosen is keychain,
-    }
+    source = sources[next(index for index, item in enumerate(payloads) if item is chosen)]
     return chosen, source
 
 
@@ -438,25 +497,40 @@ def _expires_in(expires_at) -> float | None:
     return seconds - time.time()
 
 
+def _claude_usage(access_token: str) -> dict:
+    _, payload = _request(
+        "https://api.anthropic.com/api/oauth/usage",
+        {
+            "Authorization": f"Bearer {access_token}",
+            "anthropic-beta": "oauth-2025-04-20",
+            "anthropic-version": "2023-06-01",
+            "User-Agent": "claude-cli/2.1.80 (external, cli)",
+            "x-app": "cli",
+            "Accept": "application/json",
+        },
+    )
+    return payload
+
+
 def fetch_claude() -> dict:
     try:
         data, source = _claude_oauth()
         oauth = data["claudeAiOauth"]
         remaining = _expires_in(oauth.get("expiresAt"))
+        refreshed = False
         if remaining is None or remaining < 120:
             data = _refresh_claude(data, source)
             oauth = data["claudeAiOauth"]
-        _, payload = _request(
-            "https://api.anthropic.com/api/oauth/usage",
-            {
-                "Authorization": f"Bearer {oauth['accessToken']}",
-                "anthropic-beta": "oauth-2025-04-20",
-                "anthropic-version": "2023-06-01",
-                "User-Agent": "claude-cli/2.1.80 (external, cli)",
-                "x-app": "cli",
-                "Accept": "application/json",
-            },
-        )
+            refreshed = True
+        try:
+            payload = _claude_usage(oauth["accessToken"])
+        except RuntimeError as error:
+            text = str(error)
+            if refreshed or ("HTTP 401" not in text and "HTTP 403" not in text):
+                raise
+            data = _refresh_claude(data, source)
+            oauth = data["claudeAiOauth"]
+            payload = _claude_usage(oauth["accessToken"])
         plan = claude_plan(oauth.get("subscriptionType"), oauth.get("rateLimitTier"))
         return parse_claude(payload, plan)
     except Exception as error:
@@ -488,33 +562,238 @@ def fetch_chatgpt() -> dict:
         return failed("chatgpt", "ChatGPT", _login_note(error, "Open Codex once"))
 
 
-def _grok_entry() -> dict:
-    path = Path.home() / ".grok" / "auth.json"
-    if not path.exists():
+def _grok_auth_path() -> Path:
+    return Path.home() / ".grok" / "auth.json"
+
+
+def _expires_in_iso(value) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp() - time.time()
+
+
+def _grok_stamp(moment: float) -> str:
+    return datetime.fromtimestamp(moment, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def grok_refresh_form(entry: dict) -> dict:
+    refresh = entry.get("refresh_token")
+    client = entry.get("oidc_client_id")
+    if not isinstance(refresh, str) or not refresh or not isinstance(client, str) or not client:
+        raise RuntimeError("Login expired")
+    form = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh,
+        "client_id": client,
+    }
+    for source, name in (("principal_type", "principal_type"), ("principal_id", "principal_id")):
+        value = entry.get(source)
+        if isinstance(value, str) and value:
+            form[name] = value
+    return form
+
+
+def apply_grok_token(entry: dict, payload: dict, *, now: float | None = None) -> dict:
+    access = payload.get("access_token") if isinstance(payload, dict) else None
+    if not isinstance(access, str) or not access:
+        raise RuntimeError("Login expired")
+    fresh = json.loads(json.dumps(entry))
+    fresh["key"] = access
+    refresh = payload.get("refresh_token")
+    if isinstance(refresh, str) and refresh:
+        fresh["refresh_token"] = refresh
+    expires_in = payload.get("expires_in")
+    if not isinstance(expires_in, (int, float)) or expires_in <= 0:
+        expires_in = 3600
+    moment = time.time() if now is None else now
+    fresh["create_time"] = _grok_stamp(moment)
+    fresh["expires_at"] = _grok_stamp(moment + float(expires_in))
+    return fresh
+
+
+def _pick_grok_key(data: dict) -> str | None:
+    best = None
+    best_exp = ""
+    for key, value in data.items():
+        if not isinstance(value, dict) or not value.get("key"):
+            continue
+        exp = str(value.get("expires_at") or "")
+        if best is None or exp > best_exp:
+            best = key
+            best_exp = exp
+    return best
+
+
+def _read_grok_auth() -> dict:
+    path = _grok_auth_path()
+    if not path.is_file():
         raise RuntimeError("No Grok login on this Mac")
     data = _read_json(path)
-    entries = [value for value in data.values() if isinstance(value, dict) and value.get("key")]
-    if not entries:
+    if not isinstance(data, dict) or _pick_grok_key(data) is None:
         raise RuntimeError("No Grok login on this Mac")
-    entries.sort(key=lambda item: item.get("expires_at") or "", reverse=True)
-    return entries[0]
+    return data
+
+
+def _grok_entry() -> dict:
+    data = _read_grok_auth()
+    return data[_pick_grok_key(data)]
+
+
+class _GrokAuthLock:
+    def __enter__(self):
+        path = _grok_auth_path().with_name("auth.json.lock")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+        deadline = time.time() + 8
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() >= deadline:
+                    os.close(self.fd)
+                    raise TimeoutError("grok auth lock") from None
+                time.sleep(0.05)
+        os.ftruncate(self.fd, 0)
+        os.write(self.fd, f"{os.getpid()}:{int(time.time())}".encode())
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self.fd)
+        return False
+
+
+_grok_token_endpoints: dict[str, str] = {}
+
+
+def _grok_token_endpoint(issuer: str) -> str:
+    cached = _grok_token_endpoints.get(issuer)
+    if cached:
+        return cached
+    fallback = issuer.rstrip("/") + "/oauth2/token"
+    try:
+        _, document = _request(
+            issuer.rstrip("/") + "/.well-known/openid-configuration",
+            {"Accept": "application/json"},
+        )
+    except (RuntimeError, OSError, ValueError):
+        document = None
+    endpoint = document.get("token_endpoint") if isinstance(document, dict) else None
+    if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
+        endpoint = fallback
+    _grok_token_endpoints[issuer] = endpoint
+    return endpoint
+
+
+def _post_form(url: str, form: dict) -> dict:
+    _, payload = _request(
+        url,
+        {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
+        method="POST",
+        body=urllib.parse.urlencode(form).encode(),
+    )
+    if not isinstance(payload, dict):
+        raise RuntimeError("Login expired")
+    return payload
+
+
+def _exchange_grok(entry: dict) -> dict:
+    issuer = entry.get("oidc_issuer")
+    if not isinstance(issuer, str) or not issuer.startswith("https://"):
+        issuer = "https://auth.x.ai"
+    url = _grok_token_endpoint(issuer)
+    form = grok_refresh_form(entry)
+    try:
+        payload = _post_form(url, form)
+    except RuntimeError as error:
+        text = str(error)
+        bare = {key: value for key, value in form.items() if not key.startswith("principal_")}
+        if "invalid_request" in text and bare != form:
+            try:
+                payload = _post_form(url, bare)
+            except RuntimeError as second:
+                if any(code in str(second) for code in ("HTTP 400", "HTTP 401", "HTTP 403")):
+                    raise RuntimeError("Login expired") from None
+                raise
+        elif any(code in text for code in ("HTTP 400", "HTTP 401", "HTTP 403")):
+            raise RuntimeError("Login expired") from None
+        else:
+            raise
+    return apply_grok_token(entry, payload)
+
+
+def _refresh_grok_locked(force: bool) -> dict:
+    data = _read_grok_auth()
+    key = _pick_grok_key(data)
+    entry = data[key]
+    remaining = _expires_in_iso(entry.get("expires_at"))
+    if not force and remaining is not None and remaining >= 120:
+        return entry
+    fresh = _exchange_grok(entry)
+    data[key] = fresh
+    _write_private_json(_grok_auth_path(), data)
+    return fresh
+
+
+def ensure_grok_entry(force: bool = False) -> dict:
+    if not force:
+        try:
+            entry = _grok_entry()
+        except (OSError, json.JSONDecodeError):
+            raise RuntimeError("No Grok login on this Mac") from None
+        remaining = _expires_in_iso(entry.get("expires_at"))
+        if remaining is not None and remaining >= 120:
+            return entry
+    try:
+        with _GrokAuthLock():
+            return _refresh_grok_locked(force)
+    except TimeoutError:
+        entry = _grok_entry()
+        remaining = _expires_in_iso(entry.get("expires_at"))
+        if not force and remaining is not None and remaining >= 120:
+            return entry
+        raise RuntimeError("Could not read usage") from None
+
+
+def _query_grok(entry: dict) -> dict:
+    headers = {
+        "Authorization": f"Bearer {entry['key']}",
+        "X-XAI-Token-Auth": "xai-grok-cli",
+        "Accept": "application/json",
+    }
+    _, billing = _request("https://cli-chat-proxy.grok.com/v1/billing?format=credits", headers)
+    settings = None
+    try:
+        _, settings = _request("https://cli-chat-proxy.grok.com/v1/settings", headers)
+    except Exception:
+        settings = None
+    return parse_grok(billing, settings)
 
 
 def fetch_grok() -> dict:
     try:
-        entry = _grok_entry()
-        headers = {
-            "Authorization": f"Bearer {entry['key']}",
-            "X-XAI-Token-Auth": "xai-grok-cli",
-            "Accept": "application/json",
-        }
-        _, billing = _request("https://cli-chat-proxy.grok.com/v1/billing?format=credits", headers)
-        settings = None
+        entry = ensure_grok_entry()
         try:
-            _, settings = _request("https://cli-chat-proxy.grok.com/v1/settings", headers)
-        except Exception:
-            settings = None
-        return parse_grok(billing, settings)
+            return _query_grok(entry)
+        except RuntimeError as error:
+            text = str(error)
+            if "HTTP 401" not in text and "HTTP 403" not in text:
+                raise
+            entry = ensure_grok_entry(force=True)
+            return _query_grok(entry)
     except Exception as error:
         return failed("grok", "Grok", _login_note(error, "Run grok once in the terminal"))
 

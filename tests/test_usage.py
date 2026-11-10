@@ -1,11 +1,14 @@
 import os
 import unittest
 
-from server import listen_host, logo_path
+from server import listen_host, logo_path, reuse_last_good
 from usage import (
     _login_note,
+    _parse_claude_keychain_services,
     claude_plan,
+    apply_grok_token,
     claude_refresh_body,
+    grok_refresh_form,
     pick_claude_payload,
     gemini_plan,
     parse_claude,
@@ -103,6 +106,43 @@ class ParseTests(unittest.TestCase):
         parsed = parse_grok(payload, None)
         self.assertEqual([row["label"] for row in parsed["windows"]], ["wk", "Build", "Chat"])
 
+    def test_grok_refresh_form_sends_the_oidc_client_not_the_access_token(self):
+        form = grok_refresh_form(
+            {
+                "key": "access-should-not-be-sent",
+                "refresh_token": "refresh",
+                "oidc_client_id": "client",
+                "principal_type": "User",
+                "principal_id": "user-1",
+            }
+        )
+        self.assertEqual(form["grant_type"], "refresh_token")
+        self.assertEqual(form["refresh_token"], "refresh")
+        self.assertEqual(form["client_id"], "client")
+        self.assertEqual(form["principal_type"], "User")
+        self.assertEqual(form["principal_id"], "user-1")
+        self.assertNotIn("access-should-not-be-sent", form.values())
+
+    def test_grok_refresh_keeps_identity_and_an_unrotated_refresh_token(self):
+        fresh = apply_grok_token(
+            {"key": "old", "refresh_token": "keep", "email": "person@example.com"},
+            {"access_token": "new", "expires_in": 21600},
+            now=1_700_000_000,
+        )
+        self.assertEqual(fresh["key"], "new")
+        self.assertEqual(fresh["refresh_token"], "keep")
+        self.assertEqual(fresh["email"], "person@example.com")
+        self.assertEqual(fresh["create_time"], "2023-11-14T22:13:20.000000Z")
+        self.assertEqual(fresh["expires_at"], "2023-11-15T04:13:20.000000Z")
+
+    def test_grok_refresh_stores_a_rotated_refresh_token(self):
+        fresh = apply_grok_token(
+            {"key": "old", "refresh_token": "old-refresh"},
+            {"access_token": "new", "refresh_token": "new-refresh", "expires_in": 10},
+            now=1_700_000_000,
+        )
+        self.assertEqual(fresh["refresh_token"], "new-refresh")
+
     def test_gemini_prefers_request_buckets_and_keeps_the_fullest(self):
         payload = {
             "buckets": [
@@ -198,15 +238,47 @@ class ParseTests(unittest.TestCase):
         bare = claude_refresh_body("refresh-token", None)
         self.assertNotIn("scope", bare)
 
+    def test_claude_keychain_services_keep_profile_suffixes(self):
+        dump = """
+        "svce"<blob>="Claude Safe Storage"
+        "svce"<blob>="Claude Code-credentials"
+        "svce"<blob>="Claude Code-credentials-3019a1d5"
+        "svce"<blob>="Claude Code-local-oauth-credentials"
+        "svce"<blob>="Claude Code-credentials-f9632836"
+        "svce"<blob>="Claude Code-credentials-3019a1d5"
+        """
+        self.assertEqual(
+            _parse_claude_keychain_services(dump),
+            [
+                "Claude Code-credentials",
+                "Claude Code-credentials-3019a1d5",
+                "Claude Code-credentials-f9632836",
+            ],
+        )
+
     def test_expired_login_notes_do_not_repeat_the_old_korean_string(self):
         self.assertEqual(_login_note(RuntimeError("HTTP 401"), "Open Codex once"), "Open Codex once")
         self.assertEqual(_login_note(RuntimeError("HTTP 403"), "Run gemini once"), "Run gemini once")
+        self.assertEqual(_login_note(RuntimeError("Login expired"), "Open Claude once"), "Open Claude once")
         self.assertEqual(_login_note(RuntimeError("HTTP 429"), "Open Claude once"), "Try again in a moment")
         self.assertEqual(
             _login_note(RuntimeError("No Grok login on this Mac"), "Run grok once in the terminal"),
             "No Grok login on this Mac",
         )
         self.assertNotIn("ya29", _login_note(RuntimeError("HTTP 401 ya29.secret"), "Run gemini once"))
+
+    def test_rate_limit_keeps_the_last_good_reading(self):
+        good = {"id": "claude", "ok": True, "note": None, "windows": [{"label": "wk", "used": 53}]}
+        limited = {"id": "claude", "ok": False, "note": "Try again in a moment", "windows": []}
+        gone = {"id": "claude", "ok": False, "note": "Open Claude once", "windows": []}
+        merged, saved = reuse_last_good([limited], {"claude": good})
+        self.assertEqual(merged[0]["windows"][0]["used"], 53)
+        self.assertTrue(merged[0]["ok"])
+        merged, saved = reuse_last_good([gone], saved)
+        self.assertFalse(merged[0]["ok"])
+        self.assertEqual(merged[0]["note"], "Open Claude once")
+        merged, saved = reuse_last_good([good], {})
+        self.assertEqual(saved["claude"]["windows"][0]["used"], 53)
 
     def test_server_stays_on_localhost_unless_asked(self):
         old = os.environ.pop("HEADROOM_LAN", None)

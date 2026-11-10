@@ -36,7 +36,8 @@ TYPES = {
 }
 
 _lock = threading.Lock()
-_cache: dict = {"at": 0.0, "body": None}
+_cache: dict = {"at": 0.0, "body": None, "ttl": 20.0}
+_good: dict[str, dict] = {}
 _lan = False
 
 
@@ -72,28 +73,50 @@ def lan_ip() -> str | None:
         sock.close()
 
 
+def reuse_last_good(providers: list[dict], previous: dict[str, dict]) -> tuple[list[dict], dict[str, dict]]:
+    saved = dict(previous)
+    merged = []
+    for item in providers:
+        pid = item.get("id")
+        if item.get("ok") and isinstance(pid, str):
+            saved[pid] = item
+            merged.append(item)
+        elif item.get("note") == "Try again in a moment" and isinstance(pid, str) and pid in saved:
+            merged.append(saved[pid])
+        else:
+            merged.append(item)
+    return merged, saved
+
+
 def snapshot(fresh: bool = False) -> dict:
     now = time.time()
     with _lock:
         cached = _cache["body"]
-        if not fresh and cached and now - _cache["at"] < 20:
+        if not fresh and cached and now - _cache["at"] < _cache["ttl"]:
             return cached
     jobs = (usage.fetch_chatgpt, usage.fetch_claude, usage.fetch_grok, usage.fetch_gemini)
     with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
         providers = list(pool.map(lambda fn: fn(), jobs))
+    limited = any(item.get("note") == "Try again in a moment" for item in providers)
     ip = lan_ip() if _lan else None
-    body = {
-        "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "lanURL": f"http://{ip}:{PORT}" if ip else None,
-        "providers": providers,
-    }
     with _lock:
+        providers, saved = reuse_last_good(providers, _good)
+        _good.clear()
+        _good.update(saved)
+        body = {
+            "fetchedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "lanURL": f"http://{ip}:{PORT}" if ip else None,
+            "providers": providers,
+        }
         _cache["at"] = time.time()
         _cache["body"] = body
+        _cache["ttl"] = 60.0 if limited else 20.0
     return body
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, fmt: str, *args) -> None:
         return
 

@@ -16,12 +16,12 @@
 
 ## 준비
 
-각 회사 CLI로 이 맥에 한 번 로그인합니다. Headroom은 그 로그인을 읽습니다. Claude는 키체인에 있는 최신 로그인을 먼저 보고, 액세스 토큰이 만료되면 Claude CLI와 같은 방식으로만 갱신합니다. Grok과 Gemini 토큰은 갱신하지 않습니다.
+각 회사 CLI로 이 맥에 한 번 로그인합니다. Headroom은 그 로그인을 읽습니다. Claude는 키체인에서 서비스 이름이 `Claude Code-credentials`로 시작하는 항목을 모두 보고, 그중 만료가 가장 늦은 로그인을 씁니다. 액세스 토큰이 만료되면 Claude CLI와 같은 방식으로만 갱신하고, 읽은 그 키체인 항목에 다시 씁니다. Grok 액세스 토큰은 몇 시간짜리입니다. 만료가 가까우면 Headroom이 Grok CLI와 같은 OIDC 갱신을 하고, `auth.json.lock`을 잡은 뒤에 `~/.grok/auth.json`에 다시 씁니다. 컴퓨터를 껐다 켜도 `grok`를 다시 실행하지 않아도 됩니다. Gemini 토큰은 갱신하지 않습니다.
 
 | 회사 | 로그인 | Headroom이 읽는 파일 |
 | --- | --- | --- |
 | ChatGPT | Codex (`codex`) | `~/.codex/auth.json` |
-| Claude | Claude Code (`claude`) | 키체인의 `Claude Code-credentials`, 없으면 `~/.claude/.credentials.json` |
+| Claude | Claude Code (`claude`) | 키체인의 `Claude Code-credentials`로 시작하는 항목, 없으면 `~/.claude/.credentials.json` |
 | Grok | `grok` | `~/.grok/auth.json` |
 | Gemini | `gemini`로 Google 로그인 | `~/.gemini/oauth_creds.json` |
 
@@ -47,11 +47,11 @@ python3 server.py
 
 ## 로그인이 없거나 만료되면
 
-Grok과 Gemini 토큰은 Headroom이 갱신하지 않습니다. 그 둘은 각 CLI를 한 번 실행하면 그 CLI가 로그인을 다시 씁니다.
+ChatGPT 액세스 토큰은 여러 날 동안 유효해서, 컴퓨터를 껐다 켜도 보통 그대로 보입니다. Claude와 Grok은 몇 시간짜리라서, Headroom이 다음 조회 때 갱신합니다. Gemini 토큰은 Headroom이 갱신하지 않습니다. 만료되면 `gemini`를 한 번 실행하면 그 CLI가 로그인을 다시 씁니다.
 
 - ChatGPT: Codex를 한 번 실행합니다. 창에는 `Open Codex once`.
 - Claude: 만료되면 Headroom이 갱신합니다. 갱신이 거절되면 `claude`를 한 번 실행합니다. 창에는 `Open Claude once`.
-- Grok: 터미널에서 `grok`를 한 번 실행합니다. Grok 토큰을 Headroom이 갱신하면 CLI 로그인이 풀릴 수 있어, Headroom은 그 파일을 쓰지 않습니다.
+- Grok: 만료되면 Headroom이 갱신합니다. 갱신이 거절되면 터미널에서 `grok`를 한 번 실행합니다. 창에는 `Run grok once in the terminal`.
 - Gemini: `gemini`를 한 번 실행합니다. 창에는 `Run gemini once`.
 
 로그인 파일 자체가 없으면 `No ChatGPT login on this Mac`처럼 표시됩니다.
@@ -83,7 +83,7 @@ python3 server.py --lan
 ## 보안
 
 - 서버는 기본적으로 `127.0.0.1:8737`만 듣습니다. 폰 접근은 `--lan`, `HEADROOM_LAN=1`, 또는 위의 `lan` 파일로만 켭니다.
-- Grok, Gemini 자격 증명에는 쓰지 않습니다. Claude 액세스 토큰이 만료됐을 때만 갱신하고, 키체인 항목과 `~/.claude/.credentials.json`에 다시 씁니다.
+- Gemini 자격 증명에는 쓰지 않습니다. Claude 액세스 토큰이 만료됐을 때만 갱신하고, 읽은 그 키체인 항목과 `~/.claude/.credentials.json`에 다시 씁니다. Grok 액세스 토큰이 곧 만료됐을 때만 `auth.json.lock`을 잡고 `~/.grok/auth.json`의 그 로그인 항목을 갱신합니다.
 - Google OAuth 클라이언트 비밀은 저장소에 없습니다. Gemini 토큰도 갱신하지 않습니다.
 - API 응답과 화면에는 토큰, 이메일, 계정 ID, Google Cloud 프로젝트 ID를 넣지 않습니다.
 - 로고 주소는 `chatgpt.png`, `claude.png`, `grok.png`, `gemini.png`만 허용합니다.
